@@ -19,11 +19,13 @@
 
 #include <atomic>
 #include <cstdint>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "arrow/buffer.h"
+#include "arrow/compute/exec/options.h"
 #include "arrow/compute/type_fwd.h"
 #include "arrow/memory_pool.h"
 #include "arrow/result.h"
@@ -32,7 +34,6 @@
 #include "arrow/util/cpu_info.h"
 #include "arrow/util/logging.h"
 #include "arrow/util/mutex.h"
-#include "arrow/util/optional.h"
 #include "arrow/util/thread_pool.h"
 
 #if defined(__clang__) || defined(__GNUC__)
@@ -245,7 +246,7 @@ class ARROW_EXPORT AtomicCounter {
 
   int count() const { return count_.load(); }
 
-  util::optional<int> total() const {
+  std::optional<int> total() const {
     int total = total_.load();
     if (total == -1) return {};
     return total;
@@ -340,6 +341,24 @@ class TailSkipForSIMD {
     }
     return num_selected_safe;
   }
+};
+
+/// \brief A consumer that collects results into an in-memory table
+struct ARROW_EXPORT TableSinkNodeConsumer : public SinkNodeConsumer {
+ public:
+  TableSinkNodeConsumer(std::shared_ptr<Table>* out, MemoryPool* pool)
+      : out_(out), pool_(pool) {}
+  Status Init(const std::shared_ptr<Schema>& schema,
+              BackpressureControl* backpressure_control) override;
+  Status Consume(ExecBatch batch) override;
+  Future<> Finish() override;
+
+ private:
+  std::shared_ptr<Table>* out_;
+  MemoryPool* pool_;
+  std::shared_ptr<Schema> schema_;
+  std::vector<std::shared_ptr<RecordBatch>> batches_;
+  util::Mutex consume_mutex_;
 };
 
 }  // namespace compute
