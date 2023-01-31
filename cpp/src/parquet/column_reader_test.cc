@@ -1211,5 +1211,62 @@ TEST(RecordReaderByteArrayTest, SkipByteArray) {
   }
 }
 
+TEST_F(RecordReaderTest, ReadSpacedForNullableNestedRepeated) {
+  Init(/*max_def_level=*/2, /*max_rep_level=*/2, Repetition::REPEATED);
+
+  // Records look like: {[[10]], null, [[20, 20, 20], null, [30]], null, [[40], [], [40]]}
+  std::vector<std::shared_ptr<Page>> pages;
+  std::vector<int32_t> values = {10, 20, 20, 20, 30, 40, 40};
+  std::vector<int16_t> def_levels = {2, 0, 2, 2, 2, 0, 2, 0, 2, 1, 2};
+  std::vector<int16_t> rep_levels = {0, 0, 0, 1, 2, 1, 1, 0, 0, 1, 1};
+
+  std::shared_ptr<DataPageV1> page = MakeDataPage<Int32Type>(
+      descr_.get(), values, /*num_values=*/static_cast<int>(def_levels.size()),
+      Encoding::PLAIN,
+      /*indices=*/{},
+      /*indices_size=*/0, def_levels, level_info_.def_level, rep_levels,
+      level_info_.rep_level);
+  pages.push_back(std::move(page));
+  auto pager = std::make_unique<MockPageReader>(pages);
+  record_reader_->SetPageReader(std::move(pager));
+
+  // Read [[10]], null
+  int64_t records_read = record_reader_->ReadRecords(/*num_records=*/2);
+  ASSERT_EQ(records_read, 2);
+  CheckState(/*values_written=*/2, /*null_count=*/1, /*levels_written=*/11,
+             /*levels_position=*/2);
+  CheckReadValues(/*expected_values=*/{10, kNullValue}, /*expected_defs=*/{2, 0},
+                  /*expected_reps=*/{0, 0});
+  record_reader_->Reset();
+  CheckState(/*values_written=*/0, /*null_count=*/0, /*levels_written=*/9,
+             /*levels_position=*/0);
+
+  // Read [[20, 20, 20], null, [30]]
+  records_read = record_reader_->ReadRecords(/*num_records=*/1);
+  ASSERT_EQ(records_read, 1);
+  CheckState(/*values_written=*/5, /*null_count=*/1, /*levels_written=*/9,
+             /*levels_position=*/5);
+  CheckReadValues(/*expected_values=*/{20, 20, 20, kNullValue, 30},
+                  /*expected_defs=*/{2, 2, 2, 0, 2},
+                  /*expected_reps=*/{0, 1, 2, 1, 1});
+  record_reader_->Reset();
+  CheckState(/*values_written=*/0, /*null_count=*/0, /*levels_written=*/4,
+             /*levels_position=*/0);
+
+  // Read the rest of the values, including the empty list.
+  // The empty list counts in null count since its definition level is smaller
+  // than max definition level.
+  records_read = record_reader_->ReadRecords(/*num_records=*/3);
+  ASSERT_EQ(records_read, 2);
+  CheckState(/*values_written=*/4, /*null_count=*/2, /*levels_written=*/4,
+             /*levels_position=*/4);
+  CheckReadValues(/*expected_values=*/{kNullValue, 40, kNullValue, 40},
+                  /*expected_defs=*/{0, 2, 1, 2},
+                  /*expected_reps=*/{0, 0, 1, 1});
+  record_reader_->Reset();
+  CheckState(/*values_written=*/0, /*null_count=*/0, /*levels_written=*/0,
+             /*levels_position=*/0);
+}
+
 }  // namespace test
 }  // namespace parquet
